@@ -41,7 +41,12 @@ impl FromStr for JsonPath {
 
 impl<const U: usize> From<[&str; U]> for JsonPath {
     fn from(value: [&str; U]) -> Self {
-        todo!()
+        JsonPath {
+            parts: value
+                .iter()
+                .map(|value| value.to_string().into())
+                .collect()
+        }
     }
 }
 
