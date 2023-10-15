@@ -1,7 +1,6 @@
-use std::error::Error;
 use std::fmt::Formatter;
 use std::str::FromStr;
-use serde::de::Visitor;
+use serde::de::{Error, Visitor};
 use crate::json_search::JsonSearch;
 
 pub struct JsonSearchVisitor;
