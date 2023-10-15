@@ -1,7 +1,6 @@
 use std::fmt::{Display, Formatter};
 
-#[derive(Debug)]
-#[cfg_attr(test, derive(PartialEq))]
+#[derive(Debug, Clone, PartialEq)]
 pub enum SearchPart {
     Key(String),
     Index(usize),

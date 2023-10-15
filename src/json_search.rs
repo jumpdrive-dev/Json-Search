@@ -1,13 +1,22 @@
+use std::fmt::{Display, Formatter};
 use std::str::FromStr;
 use serde_json::Value;
 use thiserror::Error;
 use crate::json_path::JsonPath;
+use crate::json_path::path_part::PathPart;
 use crate::json_search::search_part::SearchPart;
+
+#[cfg(feature = "serde")]
+use serde::{Serialize, Serializer, Deserialize, Deserializer};
+#[cfg(feature = "serde")]
+use crate::json_search::json_search_visitor::JsonSearchVisitor;
 
 pub mod search_part;
 
-#[derive(Debug, Default)]
-#[cfg_attr(test, derive(PartialEq))]
+#[cfg(feature = "serde")]
+mod json_search_visitor;
+
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct JsonSearch {
     parts: Vec<SearchPart>,
     optional: bool,
@@ -15,14 +24,20 @@ pub struct JsonSearch {
 
 #[derive(Debug, Error, PartialEq)]
 pub enum JsonSearchResolveError {
-    #[error("")]
-    NotAnObject,
+    #[error("Expected an object at '{0}'")]
+    NotAnObject(JsonPath),
 
-    #[error("")]
-    MissingRequiredPart,
+    #[error("Expected an array at '{0}'")]
+    NotAnArray(JsonPath),
 
-    #[error("")]
-    MissingPart,
+    #[error("Expected an array or an object at '{0}'")]
+    NotAnArrayOrObject(JsonPath),
+
+    #[error("Missing required key '{1}' at '{0}'")]
+    MissingRequiredKey(JsonPath, String),
+
+    #[error("Missing required index '{1}' at '{0}'")]
+    MissingRequiredIndex(JsonPath, usize),
 }
 
 impl JsonSearch {
@@ -43,10 +58,10 @@ impl JsonSearch {
     }
 
     pub fn resolve(&self, target: &Value) -> Result<Vec<JsonPath>, JsonSearchResolveError> {
-        self.resolve_inner(&self.parts, target)
+        self.resolve_inner(&self.parts, target, JsonPath::default())
     }
 
-    fn resolve_inner(&self, parts: &[SearchPart], target: &Value) -> Result<Vec<JsonPath>, JsonSearchResolveError> {
+    fn resolve_inner(&self, parts: &[SearchPart], target: &Value, parent: JsonPath) -> Result<Vec<JsonPath>, JsonSearchResolveError> {
         let mut results = vec![];
         let remaining = if parts.len() > 0 {
             &parts[1..]
@@ -54,36 +69,95 @@ impl JsonSearch {
             &parts[0..]
         };
 
+        if parts.is_empty() {
+            return Ok(vec![parent]);
+        }
+
+
         if let Some(part) = parts.get(0) {
-            match part {
-                SearchPart::Key(key) => {}
-                SearchPart::Index(_) => {}
-                SearchPart::Wildcard => {}
-            }
+            let resolved = match part {
+                SearchPart::Key(key) => self.resolve_key(remaining, target, parent, key)?,
+                SearchPart::Index(index) => self.resolve_index(remaining, target, parent, index)?,
+                SearchPart::Wildcard => self.resolve_wildcard(remaining, target, parent)?,
+            };
+
+            results.extend(resolved);
         };
 
         Ok(results)
     }
 
-    fn resolve_key(&self, parts: &[SearchPart], target: &Value, key: &String) -> Result<Vec<JsonPath>, JsonSearchResolveError> {
+    fn resolve_key(&self, parts: &[SearchPart], target: &Value, mut parent: JsonPath, key: &String) -> Result<Vec<JsonPath>, JsonSearchResolveError> {
         let Value::Object(map) = target else {
-            return Err(JsonSearchResolveError::NotAnObject);
+            return Err(JsonSearchResolveError::NotAnObject(parent));
         };
 
-        let key_value = self.resolve_optional(map.get(key))?;
-
-        match key_value {
-            Some(value) => self.resolve_inner(parts, value),
-            None => Ok(vec![])
+        match map.get(key) {
+            Some(value) => {
+                parent.push(PathPart::Key(key.clone()));
+                self.resolve_inner(parts, value, parent)
+            },
+            None if self.optional => Ok(vec![]),
+            None => Err(JsonSearchResolveError::MissingRequiredKey(parent, key.to_string())),
         }
     }
 
-    fn resolve_optional<T>(&self, optional: Option<T>) -> Result<Option<T>, JsonSearchResolveError> {
-        match optional {
-            Some(value) => Ok(Some(value)),
-            None if self.optional => Ok(None),
-            _ => Err(JsonSearchResolveError::MissingRequiredPart),
+    fn resolve_index(&self, parts: &[SearchPart], target: &Value, mut parent: JsonPath, index: &usize) -> Result<Vec<JsonPath>, JsonSearchResolveError> {
+        let Value::Array(array) = target else {
+            return Err(JsonSearchResolveError::NotAnArray(parent));
+        };
+
+        match array.get(*index) {
+            Some(value) => {
+                parent.push(PathPart::Index(*index));
+                self.resolve_inner(parts, value, parent)
+            },
+            None if self.optional => Ok(vec![]),
+            None => Err(JsonSearchResolveError::MissingRequiredIndex(parent, *index)),
         }
+    }
+
+    fn resolve_wildcard(&self, parts: &[SearchPart], target: &Value, parent: JsonPath) -> Result<Vec<JsonPath>, JsonSearchResolveError> {
+        match target {
+            Value::Array(_) => self.resolve_array_wildcard(parts, target, parent),
+            Value::Object(_) => self.resolve_object_wildcard(parts, target, parent),
+            _ => Err(JsonSearchResolveError::NotAnArrayOrObject(parent)),
+        }
+    }
+
+    fn resolve_array_wildcard(&self, parts: &[SearchPart], target: &Value, mut parent: JsonPath) -> Result<Vec<JsonPath>, JsonSearchResolveError> {
+        let Value::Array(array) = target else {
+            return Err(JsonSearchResolveError::NotAnArray(parent));
+        };
+
+        let parts: Vec<Vec<JsonPath>> = array.iter()
+            .enumerate()
+            .filter_map(|(i, value)| {
+                let mut local = parent.clone();
+                local.push(PathPart::Index(i));
+
+                self.resolve_inner(parts, value, local).ok()
+            })
+            .collect();
+
+        Ok(parts.into_iter().flatten().collect())
+    }
+
+    fn resolve_object_wildcard(&self, parts: &[SearchPart], target: &Value, mut parent: JsonPath) -> Result<Vec<JsonPath>, JsonSearchResolveError> {
+        let Value::Object(map) = target else {
+            return Err(JsonSearchResolveError::NotAnObject(parent));
+        };
+
+        let parts: Vec<Vec<JsonPath>> = map.iter()
+            .filter_map(|(key, value)| {
+                let mut local = parent.clone();
+                local.push(PathPart::Key(key.to_string()));
+
+                self.resolve_inner(parts, value, local).ok()
+            })
+            .collect();
+
+        Ok(parts.into_iter().flatten().collect())
     }
 }
 
@@ -126,6 +200,42 @@ impl<const U: usize> From<[&str; U]> for JsonSearch {
                 .collect(),
             optional: false,
         }
+    }
+}
+
+impl Display for JsonSearch {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        if self.optional {
+            write!(f, "?")?;
+        } else {
+            write!(f, "$")?;
+        }
+
+        for part in &self.parts {
+            write!(f, "{}", part)?;
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(feature = "serde")]
+impl Serialize for JsonSearch {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+        where
+            S: Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> Deserialize<'de> for JsonSearch {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: Deserializer<'de>,
+    {
+        deserializer.deserialize_string(JsonSearchVisitor)
     }
 }
 
@@ -245,7 +355,7 @@ mod tests {
     }
 
     #[test]
-    fn multiple_values_in_array_are_resolved_correctly_using_a_wildcard() {
+    fn multiple_values_in_array_wildcard_are_resolved_correctly_using_a_wildcard() {
         let target_value = json!([10, 20, 30, 40, 50]);
         let search = JsonSearch::from(["*"]);
 
@@ -261,7 +371,7 @@ mod tests {
     }
 
     #[test]
-    fn multiple_nested_value_in_array_are_resolved_correctly() {
+    fn multiple_nested_value_in_array_wildcard_are_resolved_correctly() {
         let target_value = json!([
             { "a": 10 },
             { "a": 20 },
@@ -283,7 +393,7 @@ mod tests {
     }
 
     #[test]
-    fn different_nested_value_in_array_are_resolved_correctly() {
+    fn different_nested_value_in_array_wildcard_are_resolved_correctly() {
         let target_value = json!([
             { "a": 10 },
             { "a": 20 },
@@ -303,16 +413,133 @@ mod tests {
     }
 
     #[test]
-    fn required_search_returns_an_err_when_a_path_does_not_exist() {
-        assert_eq!(JsonSearch::from(["b"]).resolve(&json!({ "a": 10 })), Err(JsonSearchResolveError::MissingPart));
-        assert_eq!(JsonSearch::from(["b"]).resolve(&json!("hello world")), Err(JsonSearchResolveError::MissingPart));
-        assert_eq!(JsonSearch::from(["0"]).resolve(&json!({ "a": 10 })), Err(JsonSearchResolveError::MissingPart));
+    fn different_nested_value_types_in_array_wildcard_are_resolved_correctly() {
+        let target_value = json!([
+            { "a": { "b": 10 } },
+            { "a": { "b": 20 } },
+            { "a": { "b": 30 } },
+            { "a": 40 },
+            { "a": 50 }
+        ]);
+        let search = JsonSearch::from(["*", "a", "b"]);
+
+        let result = search.resolve(&target_value);
+
+        assert_eq!(result, Ok(vec![
+            JsonPath::from(["0", "a", "b"]),
+            JsonPath::from(["1", "a", "b"]),
+            JsonPath::from(["2", "a", "b"]),
+        ]));
     }
 
-    // #[test]
-    // fn optional_search_with_no_matches_resolves_correctly() {
-    //     let target_value = json!({
-    //         "a": 10,
-    //     });
-    // }
+    #[test]
+    fn nested_array_wildcards_are_resolved_correctly() {
+        let target_value = json!([
+            { "a": [ 10, 20 ] },
+            { "a": [ 10, 20 ] },
+            { "b": [ 10, 20 ] },
+        ]);
+
+        let search = JsonSearch::from(["*", "a", "*"]);
+
+        let result = search.resolve(&target_value);
+
+        assert_eq!(result, Ok(vec![
+            JsonPath::from(["0", "a", "0"]),
+            JsonPath::from(["0", "a", "1"]),
+            JsonPath::from(["1", "a", "0"]),
+            JsonPath::from(["1", "a", "1"]),
+        ]));
+    }
+
+    #[test]
+    fn multiple_values_in_object_wildcard_are_resolved_correctly_using_a_wildcard() {
+        let target_value = json!({
+            "a": 10,
+            "b": 20,
+            "c": 30,
+            "d": 40,
+            "e": 50,
+        });
+        let search = JsonSearch::from(["*"]);
+
+        let result = search.resolve(&target_value);
+
+        assert_eq!(result, Ok(vec![
+            JsonPath::from(["a"]),
+            JsonPath::from(["b"]),
+            JsonPath::from(["c"]),
+            JsonPath::from(["d"]),
+            JsonPath::from(["e"]),
+        ]));
+    }
+
+    #[test]
+    fn multiple_nested_value_in_object_wildcard_are_resolved_correctly() {
+        let target_value = json!({
+            "a": [10],
+            "b": [20],
+            "c": [30],
+            "d": [40],
+            "e": [50],
+        });
+        let search = JsonSearch::from(["*", "0"]);
+
+        let result = search.resolve(&target_value);
+
+        assert_eq!(result, Ok(vec![
+            JsonPath::from(["a", "0"]),
+            JsonPath::from(["b", "0"]),
+            JsonPath::from(["c", "0"]),
+            JsonPath::from(["d", "0"]),
+            JsonPath::from(["e", "0"]),
+        ]));
+    }
+
+    #[test]
+    fn different_nested_value_in_object_wildcard_are_resolved_correctly() {
+        let target_value = json!({
+            "a": [10, 60],
+            "b": [20, 70],
+            "c": [30, 80],
+            "d": [40],
+            "e": [50],
+        });
+        let search = JsonSearch::from(["*", "1"]);
+
+        let result = search.resolve(&target_value);
+
+        assert_eq!(result, Ok(vec![
+            JsonPath::from(["a", "1"]),
+            JsonPath::from(["b", "1"]),
+            JsonPath::from(["c", "1"]),
+        ]));
+    }
+
+    #[test]
+    fn nested_object_wildcards_are_resolved_correctly() {
+        let target_value = json!({
+            "a": { "b": 10, "c": 20 },
+            "b": { "d": 10, "e": 20 },
+            "c": 10,
+        });
+
+        let search = JsonSearch::from(["*", "*"]);
+
+        let result = search.resolve(&target_value);
+
+        assert_eq!(result, Ok(vec![
+            JsonPath::from(["a", "b"]),
+            JsonPath::from(["a", "c"]),
+            JsonPath::from(["b", "d"]),
+            JsonPath::from(["b", "e"]),
+        ]));
+    }
+
+    #[test]
+    fn required_search_returns_an_err_when_a_path_does_not_exist() {
+        assert_eq!(JsonSearch::from(["b"]).resolve(&json!({ "a": 10 })), Err(JsonSearchResolveError::MissingRequiredKey(JsonPath::default(), "b".to_string())));
+        assert_eq!(JsonSearch::from(["b"]).resolve(&json!("hello world")), Err(JsonSearchResolveError::NotAnObject(JsonPath::default())));
+        assert_eq!(JsonSearch::from(["0"]).resolve(&json!({ "a": 10 })), Err(JsonSearchResolveError::NotAnArray(JsonPath::default())));
+    }
 }

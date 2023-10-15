@@ -1,11 +1,11 @@
+use std::fmt::{Display, Formatter};
 use std::str::FromStr;
 use thiserror::Error;
 use crate::json_path::path_part::PathPart;
 
 pub mod path_part;
 
-#[derive(Debug, Default)]
-#[cfg_attr(test, derive(PartialEq))]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct JsonPath {
     parts: Vec<PathPart>,
 }
@@ -17,6 +17,12 @@ pub enum JsonPathParseError {
 
     #[error("JSON path string should start with a '$', but got '{0}'")]
     IncorrectRoot(String),
+}
+
+impl JsonPath {
+    pub fn push(&mut self, part: PathPart) {
+        self.parts.push(part);
+    }
 }
 
 impl FromStr for JsonPath {
@@ -47,6 +53,18 @@ impl<const U: usize> From<[&str; U]> for JsonPath {
                 .map(|value| value.to_string().into())
                 .collect()
         }
+    }
+}
+
+impl Display for JsonPath {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "$")?;
+
+        for part in &self.parts {
+            write!(f, "{}", part)?;
+        }
+
+        Ok(())
     }
 }
 
