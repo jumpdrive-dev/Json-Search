@@ -63,7 +63,7 @@ impl JsonSearch {
 
     fn resolve_inner(&self, parts: &[SearchPart], target: &Value, parent: JsonPath) -> Result<Vec<JsonPath>, JsonSearchResolveError> {
         let mut results = vec![];
-        let remaining = if parts.len() > 0 {
+        let remaining = if !parts.is_empty() {
             &parts[1..]
         } else {
             &parts[0..]
@@ -125,7 +125,7 @@ impl JsonSearch {
         }
     }
 
-    fn resolve_array_wildcard(&self, parts: &[SearchPart], target: &Value, mut parent: JsonPath) -> Result<Vec<JsonPath>, JsonSearchResolveError> {
+    fn resolve_array_wildcard(&self, parts: &[SearchPart], target: &Value, parent: JsonPath) -> Result<Vec<JsonPath>, JsonSearchResolveError> {
         let Value::Array(array) = target else {
             return Err(JsonSearchResolveError::NotAnArray(parent));
         };
@@ -143,7 +143,7 @@ impl JsonSearch {
         Ok(parts.into_iter().flatten().collect())
     }
 
-    fn resolve_object_wildcard(&self, parts: &[SearchPart], target: &Value, mut parent: JsonPath) -> Result<Vec<JsonPath>, JsonSearchResolveError> {
+    fn resolve_object_wildcard(&self, parts: &[SearchPart], target: &Value, parent: JsonPath) -> Result<Vec<JsonPath>, JsonSearchResolveError> {
         let Value::Object(map) = target else {
             return Err(JsonSearchResolveError::NotAnObject(parent));
         };

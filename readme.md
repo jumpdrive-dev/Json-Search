@@ -11,7 +11,7 @@ Because this library is still work in progress, it's not available on crates.io 
 this unstable version, you can add this as a git dependency like so:
 
 ```toml
-json_path = { git = "https://github.com/jumpdrive-dev/Json-Search", rev = "<commit to use>" }
+json_search = { git = "https://github.com/jumpdrive-dev/Json-Search", rev = "<commit to use>" }
 ```
 
 ## Features
