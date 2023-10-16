@@ -2,13 +2,9 @@
 
 Library for searching a JSON structure for certain paths.
 
-> **Warning**
-> This library is work in progress and should not be used in production yet.
-
 ## Usage
 
-Because this library is still work in progress, it's not available on crates.io yet. But if you want to play around with
-this unstable version, you can add this as a git dependency like so:
+To use this library, add the following git dependency to your `Cargo.toml` file:
 
 ```toml
 json_search = { git = "https://github.com/jumpdrive-dev/Json-Search", tag = "1.0.0" }
