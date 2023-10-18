@@ -7,7 +7,7 @@ Library for searching a JSON structure for certain paths.
 To use this library, add the following git dependency to your `Cargo.toml` file:
 
 ```toml
-json_search = { git = "https://github.com/jumpdrive-dev/Json-Search", tag = "1.0.1" }
+json-search = { git = "https://github.com/jumpdrive-dev/Json-Search", tag = "1.0.1" }
 ```
 
 ## Features
